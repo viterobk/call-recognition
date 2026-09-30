@@ -1,34 +1,39 @@
-import builtins
+import os
+import tempfile
 from collections import deque
 from pathlib import Path
 from queue import Queue
-from re import match
 from sys import stdout
 from time import perf_counter
 from typing import Iterator
 
+import gigaam
 import numpy as np
-import whisper
+import soundfile as sf
 
 PROJECT_DIR = Path(__file__).resolve().parent
 AUDIO_FILE = PROJECT_DIR / "speech.mp3"
 RESULT_FILE = PROJECT_DIR / "result.txt"
-MODEL_NAME = "large-v3-turbo"
+MODEL_NAME = "v3_e2e_rnnt"
 SPLIT_INTO_BATCHES = True
 
 SAMPLE_RATE = 16_000
 STREAM_CHUNK_MS = 30
-PAUSE_MS = 500
-MIN_REPLICA_MS = 1000
+PAUSE_MS = 300
+MIN_REPLICA_MS = 2000
 PAD_MS = 150
 SPEECH_RMS = 0.015
+MAX_SEGMENT_S = 25
+
+
+def load_audio(audio_path: Path) -> np.ndarray:
+    if not audio_path.exists():
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    return gigaam.load_audio(str(audio_path), sample_rate=SAMPLE_RATE).numpy()
 
 
 def load_audio_stream(audio_path: Path, chunk_ms: int = STREAM_CHUNK_MS) -> Iterator[np.ndarray]:
-    if not audio_path.exists():
-        raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-    audio = whisper.load_audio(str(audio_path), sr=SAMPLE_RATE)
+    audio = load_audio(audio_path)
     chunk_size = int(SAMPLE_RATE * chunk_ms / 1000)
     for start in range(0, len(audio), chunk_size):
         yield audio[start : start + chunk_size]
@@ -96,76 +101,45 @@ def split_stream_by_pauses(
         yield replica, replica_start_s()
 
 
-def parse_whisper_segment_line(message: str) -> tuple[float, float, str] | None:
-    found = match(r"^\[(.+?) --> (.+?)\] ?(.*)$", message.strip())
-    if found is None:
-        return None
-    start_s = parse_timestamp(found.group(1))
-    end_s = parse_timestamp(found.group(2))
-    text = found.group(3).strip()
-    if not text:
-        return None
-    return start_s, max(0.0, end_s - start_s), text
+def transcribe_waveform(model, audio: np.ndarray) -> str:
+    max_samples = MAX_SEGMENT_S * SAMPLE_RATE
+    parts: list[str] = []
+    for start in range(0, len(audio), max_samples):
+        text = transcribe_chunk(model, audio[start : start + max_samples])
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
 
 
-def parse_timestamp(stamp: str) -> float:
-    parts = stamp.split(":")
-    if len(parts) == 2:
-        minutes, rest = parts
-        hours = 0
-    else:
-        hours, minutes, rest = parts
-    seconds, milliseconds = rest.split(".")
-    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(milliseconds) / 1000
+def transcribe_chunk(model, audio: np.ndarray) -> str:
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        sf.write(path, audio, SAMPLE_RATE)
+        return str(model.transcribe(path)).strip()
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
-def transcribe_replica(model, audio: np.ndarray, *, use_context: bool) -> tuple[str, float]:
+def transcribe_replica(model, audio: np.ndarray) -> tuple[str, float]:
     started = perf_counter()
-    result = model.transcribe(
-        audio,
-        language="ru",
-        fp16=False,
-        condition_on_previous_text=use_context,
-        verbose=None,
-    )
-    elapsed = perf_counter() - started
-    return result["text"].strip(), elapsed
+    text = transcribe_waveform(model, audio)
+    return text, perf_counter() - started
 
 
 def transcribe_whole_file(model, audio: np.ndarray, lines: list[str]) -> None:
-    original_print = builtins.print
-    last_mark = perf_counter()
-    last_rec_s = 0.0
-
-    def hooked_print(*args, **kwargs) -> None:
-        nonlocal last_mark, last_rec_s
-        message = " ".join(str(argument) for argument in args)
-        parsed = parse_whisper_segment_line(message)
-        if parsed is not None:
-            start_s, duration_s, text = parsed
-            now = perf_counter()
-            rec_s = now - last_mark
-            if rec_s < 0.08:
-                rec_s = last_rec_s
-            else:
-                last_rec_s = rec_s
-                last_mark = now
-            emit(text, start_s, duration_s, rec_s, lines, printer=original_print)
-            return
-        if message.strip():
-            original_print(*args, **{**kwargs, "flush": True})
-
-    builtins.print = hooked_print
-    try:
-        model.transcribe(
-            audio,
-            language="ru",
-            fp16=False,
-            condition_on_previous_text=False,
-            verbose=True,
+    max_samples = MAX_SEGMENT_S * SAMPLE_RATE
+    for start in range(0, len(audio), max_samples):
+        chunk = audio[start : start + max_samples]
+        started = perf_counter()
+        text = transcribe_chunk(model, chunk)
+        emit(
+            text,
+            start / SAMPLE_RATE,
+            len(chunk) / SAMPLE_RATE,
+            perf_counter() - started,
+            lines,
         )
-    finally:
-        builtins.print = original_print
 
 
 def emit(
@@ -187,21 +161,18 @@ def emit(
 
 def main() -> None:
     stdout.reconfigure(line_buffering=True)
-    model = whisper.load_model(MODEL_NAME)
+    model = gigaam.load_model(MODEL_NAME)
     lines: list[str] = []
 
     if not SPLIT_INTO_BATCHES:
-        if not AUDIO_FILE.exists():
-            raise FileNotFoundError(f"Audio file not found: {AUDIO_FILE}")
-        audio = whisper.load_audio(str(AUDIO_FILE))
-        transcribe_whole_file(model, audio, lines)
+        transcribe_whole_file(model, load_audio(AUDIO_FILE), lines)
         return
 
     batches: Queue = Queue()
     for batch, start_s in split_stream_by_pauses(load_audio_stream(AUDIO_FILE)):
         batches.put((batch, start_s))
         replica, start_s = batches.get()
-        text, rec_s = transcribe_replica(model, replica, use_context=False)
+        text, rec_s = transcribe_replica(model, replica)
         duration_s = len(replica) / SAMPLE_RATE
         emit(text, start_s, duration_s, rec_s, lines)
 
