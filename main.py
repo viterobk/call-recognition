@@ -1,15 +1,13 @@
-import os
-import tempfile
 from collections import deque
 from pathlib import Path
-from queue import Queue
 from sys import stdout
 from time import perf_counter
 from typing import Iterator
 
 import gigaam
 import numpy as np
-import soundfile as sf
+import torch
+from gigaam.utils import AudioDataset
 
 PROJECT_DIR = Path(__file__).resolve().parent
 AUDIO_FILE = PROJECT_DIR / "speech.mp3"
@@ -24,6 +22,7 @@ MIN_REPLICA_MS = 2000
 PAD_MS = 150
 SPEECH_RMS = 0.015
 MAX_SEGMENT_S = 25
+GPU_BATCH_SIZE = 8
 
 
 def load_audio(audio_path: Path) -> np.ndarray:
@@ -101,45 +100,45 @@ def split_stream_by_pauses(
         yield replica, replica_start_s()
 
 
-def transcribe_waveform(model, audio: np.ndarray) -> str:
+def split_for_model(audio: np.ndarray) -> list[np.ndarray]:
     max_samples = MAX_SEGMENT_S * SAMPLE_RATE
-    parts: list[str] = []
-    for start in range(0, len(audio), max_samples):
-        text = transcribe_chunk(model, audio[start : start + max_samples])
-        if text:
-            parts.append(text)
-    return " ".join(parts).strip()
+    if len(audio) <= max_samples:
+        return [audio]
+    return [audio[start : start + max_samples] for start in range(0, len(audio), max_samples)]
 
 
-def transcribe_chunk(model, audio: np.ndarray) -> str:
-    fd, path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    try:
-        sf.write(path, audio, SAMPLE_RATE)
-        return str(model.transcribe(path)).strip()
-    finally:
-        Path(path).unlink(missing_ok=True)
+def transcribe_batch(model, audios: list[np.ndarray]) -> list[str]:
+    if not audios:
+        return []
+    wavs = [torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)) for audio in audios]
+    wav_pad, wav_lens = AudioDataset.collate(wavs)
+    wav_pad = wav_pad.to(device=model._device, dtype=model._dtype)
+    wav_lens = wav_lens.to(model._device)
+    with torch.inference_mode():
+        encoded, encoded_len = model(wav_pad, wav_lens)
+        decoded = model._decode(encoded, encoded_len, wav_lens, False)
+    if model._device.type == "cuda":
+        torch.cuda.synchronize()
+    return [text.strip() for text, _words in decoded]
 
 
-def transcribe_replica(model, audio: np.ndarray) -> tuple[str, float]:
+def transcribe_replicas(model, audios: list[np.ndarray]) -> tuple[list[str], float]:
+    groups = [split_for_model(audio) for audio in audios]
+    flat = [piece for group in groups for piece in group]
     started = perf_counter()
-    text = transcribe_waveform(model, audio)
-    return text, perf_counter() - started
+    flat_texts: list[str] = []
+    batch_size = GPU_BATCH_SIZE if model._device.type == "cuda" else 1
+    for start in range(0, len(flat), batch_size):
+        flat_texts.extend(transcribe_batch(model, flat[start : start + batch_size]))
+    elapsed = perf_counter() - started
 
-
-def transcribe_whole_file(model, audio: np.ndarray, lines: list[str]) -> None:
-    max_samples = MAX_SEGMENT_S * SAMPLE_RATE
-    for start in range(0, len(audio), max_samples):
-        chunk = audio[start : start + max_samples]
-        started = perf_counter()
-        text = transcribe_chunk(model, chunk)
-        emit(
-            text,
-            start / SAMPLE_RATE,
-            len(chunk) / SAMPLE_RATE,
-            perf_counter() - started,
-            lines,
-        )
+    texts: list[str] = []
+    offset = 0
+    for group in groups:
+        count = len(group)
+        texts.append(" ".join(part for part in flat_texts[offset : offset + count] if part).strip())
+        offset += count
+    return texts, elapsed / max(len(audios), 1)
 
 
 def emit(
@@ -159,22 +158,43 @@ def emit(
     RESULT_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def load_model():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        torch.set_float32_matmul_precision("high")
+    model = gigaam.load_model(MODEL_NAME, device=device)
+    if device == "cuda":
+        print(f"device: cuda ({torch.cuda.get_device_name(0)})", flush=True)
+    else:
+        print("device: cpu", flush=True)
+    return model
+
+
+def recognize(model, replicas: list[tuple[np.ndarray, float]], lines: list[str]) -> None:
+    batch_size = GPU_BATCH_SIZE if model._device.type == "cuda" else 1
+    for start in range(0, len(replicas), batch_size):
+        batch = replicas[start : start + batch_size]
+        texts, rec_s = transcribe_replicas(model, [audio for audio, _start_s in batch])
+        for (audio, start_s), text in zip(batch, texts):
+            emit(text, start_s, len(audio) / SAMPLE_RATE, rec_s, lines)
+
+
 def main() -> None:
     stdout.reconfigure(line_buffering=True)
-    model = gigaam.load_model(MODEL_NAME)
+    model = load_model()
     lines: list[str] = []
 
     if not SPLIT_INTO_BATCHES:
-        transcribe_whole_file(model, load_audio(AUDIO_FILE), lines)
-        return
+        audio = load_audio(AUDIO_FILE)
+        max_samples = MAX_SEGMENT_S * SAMPLE_RATE
+        replicas = [
+            (audio[start : start + max_samples], start / SAMPLE_RATE)
+            for start in range(0, len(audio), max_samples)
+        ]
+    else:
+        replicas = list(split_stream_by_pauses(load_audio_stream(AUDIO_FILE)))
 
-    batches: Queue = Queue()
-    for batch, start_s in split_stream_by_pauses(load_audio_stream(AUDIO_FILE)):
-        batches.put((batch, start_s))
-        replica, start_s = batches.get()
-        text, rec_s = transcribe_replica(model, replica)
-        duration_s = len(replica) / SAMPLE_RATE
-        emit(text, start_s, duration_s, rec_s, lines)
+    recognize(model, replicas, lines)
 
 
 if __name__ == "__main__":
