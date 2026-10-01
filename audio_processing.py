@@ -116,6 +116,16 @@ def audio_batches(audio: np.ndarray, *, split_on_pauses: bool = SPLIT_ON_PAUSES)
     return list(split_stream_by_pauses(stream()))
 
 
+def rotate_batches(
+    batches: list[tuple[np.ndarray, float]],
+    offset: int,
+) -> list[tuple[np.ndarray, float]]:
+    if not batches:
+        return batches
+    offset %= len(batches)
+    return batches[offset:] + batches[:offset]
+
+
 def process_audio_file(
     audio_path: Path,
     service: TranscriptionService,
@@ -125,7 +135,7 @@ def process_audio_file(
     started = perf_counter()
     audio = load_audio(audio_path)
     audio_s = len(audio) / SAMPLE_RATE
-    batches = audio_batches(audio)
+    batches = rotate_batches(audio_batches(audio), worker_id)
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     lines: list[str] = []
     decode_s = 0.0
