@@ -22,7 +22,6 @@ MIN_REPLICA_MS = 2000
 PAD_MS = 150
 SPEECH_RMS = 0.015
 MAX_SEGMENT_S = 25
-GPU_BATCH_SIZE = 8
 
 
 def load_audio(audio_path: Path) -> np.ndarray:
@@ -122,23 +121,12 @@ def transcribe_batch(model, audios: list[np.ndarray]) -> list[str]:
     return [text.strip() for text, _words in decoded]
 
 
-def transcribe_replicas(model, audios: list[np.ndarray]) -> tuple[list[str], float]:
-    groups = [split_for_model(audio) for audio in audios]
-    flat = [piece for group in groups for piece in group]
+def transcribe_replica(model, audio: np.ndarray) -> tuple[str, float]:
     started = perf_counter()
-    flat_texts: list[str] = []
-    batch_size = GPU_BATCH_SIZE if model._device.type == "cuda" else 1
-    for start in range(0, len(flat), batch_size):
-        flat_texts.extend(transcribe_batch(model, flat[start : start + batch_size]))
-    elapsed = perf_counter() - started
-
-    texts: list[str] = []
-    offset = 0
-    for group in groups:
-        count = len(group)
-        texts.append(" ".join(part for part in flat_texts[offset : offset + count] if part).strip())
-        offset += count
-    return texts, elapsed / max(len(audios), 1)
+    parts = [text for piece in split_for_model(audio) if (text := transcribe_batch(model, [piece])[0])]
+    if model._device.type == "cuda":
+        torch.cuda.synchronize()
+    return " ".join(parts).strip(), perf_counter() - started
 
 
 def emit(
@@ -171,12 +159,9 @@ def load_model():
 
 
 def recognize(model, replicas: list[tuple[np.ndarray, float]], lines: list[str]) -> None:
-    batch_size = GPU_BATCH_SIZE if model._device.type == "cuda" else 1
-    for start in range(0, len(replicas), batch_size):
-        batch = replicas[start : start + batch_size]
-        texts, rec_s = transcribe_replicas(model, [audio for audio, _start_s in batch])
-        for (audio, start_s), text in zip(batch, texts):
-            emit(text, start_s, len(audio) / SAMPLE_RATE, rec_s, lines)
+    for audio, start_s in replicas:
+        text, rec_s = transcribe_replica(model, audio)
+        emit(text, start_s, len(audio) / SAMPLE_RATE, rec_s, lines)
 
 
 def main() -> None:

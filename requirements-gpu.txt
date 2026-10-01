@@ -1,0 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Driver CUDA 12.8. Install this file last: requirements.txt pins the PyPI
+# torch wheel, which is built for CUDA 13 and breaks cuDNN on this driver.
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+nvidia-cudnn-cu12==9.19.0.56
