@@ -1,6 +1,7 @@
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
@@ -147,11 +148,13 @@ class ResultLog:
         return f"{audio_end_s:.1f}s | +{lag_s:.2f}s"
 
     def _append(self, block: str) -> None:
+        clock = datetime.now().strftime("%H:%M:%S")
+        stamped = "\n".join(f"{clock} {line}" for line in block.split("\n"))
         with self._lock:
-            self._lines.append(block)
+            self._lines.append(stamped)
             self._path.write_text("\n".join(self._lines) + "\n", encoding="utf-8")
         with PRINT_LOCK:
-            print(f"{self._path.stem} {block}", flush=True)
+            print(f"{self._path.stem} {stamped}", flush=True)
 
 
 def process_audio_file(
