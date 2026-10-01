@@ -146,10 +146,11 @@ def process_audio_file(
     worker_id: int,
 ) -> FileJobResult:
     started = perf_counter()
-    log = ResultLog(result_path, started)
     audio = load_audio(audio_path)
     audio_s = len(audio) / SAMPLE_RATE
     batches = audio_batches(audio)
+    stream_started = perf_counter()
+    log = ResultLog(result_path, stream_started)
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     summaries: Queue[tuple[float, Future[tuple[str, float]]] | None] = Queue()
     decode_s = 0.0
@@ -219,7 +220,9 @@ def process_audio_file(
         for batch, start_s in batches:
             duration_s = len(batch) / SAMPLE_RATE
             if REALTIME_DELAY:
-                sleep(duration_s)
+                remaining_s = (start_s + duration_s) - (perf_counter() - stream_started)
+                if remaining_s > 0:
+                    sleep(remaining_s)
             recognized.put((start_s, duration_s, transcription.submit(batch)))
     finally:
         recognized.put(None)
