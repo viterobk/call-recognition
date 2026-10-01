@@ -1,39 +1,74 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sys import stdout
 from time import perf_counter
 
-from audio_processing import process_audio_file
-from summary import summarize_call
+from audio_processing import FileJobResult, process_audio_file
+from summary import SummaryService
 from transcription import TranscriptionService
 
 PROJECT_DIR = Path(__file__).resolve().parent
-AUDIO_FILE = PROJECT_DIR / "speech.mp3"
+SAMPLE_DIR = PROJECT_DIR / "sample_sounds"
 RESULTS_DIR = PROJECT_DIR / "results"
-TRANSCRIPT_FILE = RESULTS_DIR / "transcript.txt"
-SUMMARY_FILE = RESULTS_DIR / "summary.txt"
+
+
+def clear_results(path: Path) -> None:
+    path.mkdir(exist_ok=True)
+    for item in path.iterdir():
+        if item.is_file():
+            item.unlink()
+
+
+def report_load(results: list[FileJobResult], wall_s: float) -> None:
+    decode_s = sum(item.decode_s for item in results)
+    summary_s = sum(item.summary_s for item in results)
+    lines = [
+        f"files: {len(results)}",
+        f"wall: {wall_s:.2f}s",
+        f"decode_total: {decode_s:.2f}s",
+        f"summary_total: {summary_s:.2f}s",
+    ]
+    for item in results:
+        lines.append(
+            f"{item.name}: wall {item.wall_s:.2f}s | audio {item.audio_s:.1f}s | "
+            f"decode {item.decode_s:.2f}s | summary {item.summary_s:.2f}s | "
+            f"replicas {item.replicas} | summaries {item.summaries}"
+        )
+    report = "\n".join(lines)
+    print(report, flush=True)
+    (RESULTS_DIR / "report.txt").write_text(report + "\n", encoding="utf-8")
 
 
 def main() -> None:
     stdout.reconfigure(line_buffering=True)
-    RESULTS_DIR.mkdir(exist_ok=True)
-    service = TranscriptionService()
-    service.start()
+    files = sorted(SAMPLE_DIR.glob("*.mp3"))
+    if not files:
+        raise FileNotFoundError(f"В {SAMPLE_DIR} нет mp3 файлов")
+    clear_results(RESULTS_DIR)
+
+    transcription = TranscriptionService()
+    summary = SummaryService()
     try:
-        result = process_audio_file(AUDIO_FILE, service, TRANSCRIPT_FILE, worker_id=0)
+        transcription.start()
+        summary.start()
+        started = perf_counter()
+        with ThreadPoolExecutor(max_workers=len(files)) as pool:
+            futures = [
+                pool.submit(
+                    process_audio_file,
+                    audio_path,
+                    transcription,
+                    summary,
+                    RESULTS_DIR / f"{audio_path.stem}.txt",
+                    worker_id,
+                )
+                for worker_id, audio_path in enumerate(files)
+            ]
+            results = [future.result() for future in futures]
+        report_load(results, perf_counter() - started)
     finally:
-        service.close()
-
-    print(
-        f"wall {result.wall_s:.2f}s | audio {result.audio_s:.1f}s | "
-        f"decode {result.decode_s:.2f}s | replicas {result.replicas}",
-        flush=True,
-    )
-
-    started = perf_counter()
-    summary = summarize_call(result.transcript)
-    elapsed = perf_counter() - started
-    SUMMARY_FILE.write_text(summary + ("\n" if summary else ""), encoding="utf-8")
-    print(f"summary {elapsed:.2f}s\n{summary}", flush=True)
+        summary.close()
+        transcription.close()
 
 
 if __name__ == "__main__":
