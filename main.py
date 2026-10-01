@@ -48,7 +48,7 @@ def report_load(results: list[FileJobResult], wall_s: float) -> None:
     for item in results:
         lines.append(
             f"w{item.worker_id}: wall {item.wall_s:.2f}s | audio {item.audio_s:.1f}s | "
-            f"skipped {item.skipped_s:.1f}s | decode {item.decode_s:.2f}s | replicas {item.replicas}"
+            f"decode {item.decode_s:.2f}s | replicas {item.replicas}"
         )
     report = "\n".join(lines)
     print(report, flush=True)

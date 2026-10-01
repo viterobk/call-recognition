@@ -3,6 +3,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
+from random import Random
 from threading import Lock, Thread
 from time import perf_counter, sleep
 from typing import Iterator
@@ -28,7 +29,6 @@ class FileJobResult:
     worker_id: int
     wall_s: float
     audio_s: float
-    skipped_s: float
     decode_s: float
     replicas: int
 
@@ -126,12 +126,9 @@ def process_audio_file(
 ) -> FileJobResult:
     started = perf_counter()
     audio = load_audio(audio_path)
-    file_s = len(audio) / SAMPLE_RATE
-    all_batches = audio_batches(audio)
-    skipped = all_batches[:worker_id]
-    batches = all_batches[worker_id:]
-    skipped_s = sum(len(batch) for batch, _start_s in skipped) / SAMPLE_RATE
-    audio_s = file_s - skipped_s
+    audio_s = len(audio) / SAMPLE_RATE
+    batches = audio_batches(audio)
+    Random(worker_id).shuffle(batches)
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     lines: list[str] = []
     decode_s = 0.0
@@ -174,7 +171,6 @@ def process_audio_file(
         worker_id=worker_id,
         wall_s=perf_counter() - started,
         audio_s=audio_s,
-        skipped_s=skipped_s,
         decode_s=decode_s,
         replicas=len(batches),
     )
