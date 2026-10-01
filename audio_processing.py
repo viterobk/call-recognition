@@ -1,4 +1,3 @@
-from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,7 +5,6 @@ from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
 from time import perf_counter, sleep
-from typing import Iterator
 
 import gigaam
 import numpy as np
@@ -16,9 +14,7 @@ from transcription import MAX_SEGMENT_S, SAMPLE_RATE, TranscriptionService
 
 STREAM_CHUNK_MS = 30
 PAUSE_MS = 300
-MIN_REPLICA_MS = 400
-PAD_MS = 150
-SPEECH_RMS = 0.015
+SPEECH_RMS = 0.008
 SPLIT_ON_PAUSES = True
 REALTIME_DELAY = True
 SUMMARY_EVERY_S = 30.0
@@ -43,66 +39,40 @@ def load_audio(audio_path: Path) -> np.ndarray:
     return gigaam.load_audio(str(audio_path), sample_rate=SAMPLE_RATE).numpy()
 
 
-def split_stream_by_pauses(
-    stream: Iterator[np.ndarray],
+def split_on_silence(
+    audio: np.ndarray,
     *,
     pause_ms: int = PAUSE_MS,
-    min_replica_ms: int = MIN_REPLICA_MS,
-    pad_ms: int = PAD_MS,
     speech_rms: float = SPEECH_RMS,
     chunk_ms: int = STREAM_CHUNK_MS,
-) -> Iterator[tuple[np.ndarray, float]]:
+) -> list[tuple[np.ndarray, float]]:
+    if len(audio) == 0:
+        return []
+    chunk_size = int(SAMPLE_RATE * chunk_ms / 1000)
+    chunks = [audio[start : start + chunk_size] for start in range(0, len(audio), chunk_size)]
     pause_chunks = max(1, pause_ms // chunk_ms)
-    min_chunks = max(1, min_replica_ms // chunk_ms)
-    pad_chunks = max(1, pad_ms // chunk_ms)
-
-    speech_chunks: list[np.ndarray] = []
-    trailing_silence: list[np.ndarray] = []
-    leading_pad: deque[np.ndarray] = deque(maxlen=pad_chunks)
-    in_speech = False
-    replica_start_chunk = 0
-
-    def build_replica() -> np.ndarray | None:
-        if len(speech_chunks) < min_chunks:
-            return None
-        padded = [*leading_pad, *speech_chunks, *trailing_silence[:pad_chunks]]
-        return np.concatenate(padded)
-
-    def replica_start_s() -> float:
-        return replica_start_chunk * chunk_ms / 1000
-
-    for chunk_index, chunk in enumerate(stream):
+    starts = [0]
+    silence = 0
+    silence_start = 0
+    seen_speech = False
+    for index, chunk in enumerate(chunks):
         is_speech = float(np.sqrt(np.mean(np.square(chunk)))) >= speech_rms
         if is_speech:
-            if in_speech:
-                speech_chunks.extend(trailing_silence)
-                trailing_silence.clear()
-            else:
-                replica_start_chunk = chunk_index
-            in_speech = True
-            speech_chunks.append(chunk)
+            silence = 0
+            seen_speech = True
             continue
-
-        if not in_speech:
-            leading_pad.append(chunk)
+        if silence == 0:
+            silence_start = index
+        silence += 1
+        if seen_speech and silence == pause_chunks and silence_start > starts[-1]:
+            starts.append(silence_start)
+    starts.append(len(chunks))
+    segments: list[tuple[np.ndarray, float]] = []
+    for begin, end in zip(starts, starts[1:]):
+        if begin == end:
             continue
-
-        trailing_silence.append(chunk)
-        if len(trailing_silence) < pause_chunks:
-            continue
-
-        replica = build_replica()
-        if replica is not None:
-            yield replica, replica_start_s()
-
-        speech_chunks.clear()
-        trailing_silence.clear()
-        leading_pad.clear()
-        in_speech = False
-
-    replica = build_replica()
-    if replica is not None:
-        yield replica, replica_start_s()
+        segments.append((np.concatenate(chunks[begin:end]), begin * chunk_ms / 1000))
+    return segments
 
 
 def audio_batches(audio: np.ndarray, *, split_on_pauses: bool = SPLIT_ON_PAUSES) -> list[tuple[np.ndarray, float]]:
@@ -112,14 +82,7 @@ def audio_batches(audio: np.ndarray, *, split_on_pauses: bool = SPLIT_ON_PAUSES)
             (audio[start : start + max_samples], start / SAMPLE_RATE)
             for start in range(0, len(audio), max_samples)
         ]
-
-    chunk_size = int(SAMPLE_RATE * STREAM_CHUNK_MS / 1000)
-
-    def stream() -> Iterator[np.ndarray]:
-        for start in range(0, len(audio), chunk_size):
-            yield audio[start : start + chunk_size]
-
-    return list(split_stream_by_pauses(stream()))
+    return split_on_silence(audio)
 
 
 class ResultLog:
