@@ -98,24 +98,22 @@ class ResultLog:
     def write(self, text: str, audio_end_s: float) -> None:
         self._append(f"[{self._stamp(audio_end_s)}] {text}")
 
-    def write_summary(self, label: str, text: str, audio_end_s: float) -> None:
-        block = "\n".join(
-            [
-                "----------------------------------------",
-                f"[{self._stamp(audio_end_s)}] {label}",
-                text.strip(),
-                "----------------------------------------",
-            ]
-        )
-        self._append(block)
+    def write_summary(self, text: str, audio_end_s: float) -> None:
+        clock = datetime.now().strftime("%H:%M:%S")
+        body = "\n".join(f"    {line}" for line in text.strip().split("\n"))
+        header = f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ =========="
+        self._append(f"{header}\n{body}", clock_each_line=False)
 
     def _stamp(self, audio_end_s: float) -> str:
         lag_s = perf_counter() - self._started - audio_end_s
         return f"{audio_end_s:.1f}s | +{lag_s:.2f}s"
 
-    def _append(self, block: str) -> None:
-        clock = datetime.now().strftime("%H:%M:%S")
-        stamped = "\n".join(f"{clock} {line}" for line in block.split("\n"))
+    def _append(self, block: str, *, clock_each_line: bool = True) -> None:
+        if clock_each_line:
+            clock = datetime.now().strftime("%H:%M:%S")
+            stamped = "\n".join(f"{clock} {line}" for line in block.split("\n"))
+        else:
+            stamped = block
         with self._lock:
             self._lines.append(stamped)
             self._path.write_text("\n".join(self._lines) + "\n", encoding="utf-8")
@@ -151,11 +149,11 @@ def process_audio_file(
                 item = summaries.get()
                 if item is None:
                     return
-                audio_end_s, label, future = item
+                audio_end_s, _, future = item
                 text, elapsed_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
-                log.write_summary(label, text, audio_end_s)
+                log.write_summary(text, audio_end_s)
         except Exception as error:
             logged_error.append(error)
 
@@ -180,7 +178,7 @@ def process_audio_file(
                     next_summary_at += SUMMARY_EVERY_S
             if text.strip():
                 if not force:
-                    log.write(">>> запрос резюме <<<", audio_end_s)
+                    log.write_note(">>> запрос резюме <<<")
                 summaries.put((audio_end_s, "резюме", summary.submit(text)))
 
         try:
