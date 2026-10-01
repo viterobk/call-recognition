@@ -129,6 +129,9 @@ class ResultLog:
         self._lines: list[str] = []
         self._lock = Lock()
 
+    def write_note(self, text: str) -> None:
+        self._append(text)
+
     def write(self, text: str, audio_end_s: float) -> None:
         self._append(f"[{self._stamp(audio_end_s)}] {text}")
 
@@ -170,6 +173,7 @@ def process_audio_file(
     batches = audio_batches(audio)
     stream_started = perf_counter()
     log = ResultLog(result_path, stream_started)
+    log.write_note(">>> старт обработки <<<")
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     summaries: Queue[tuple[float, str, Future[tuple[str, float]]] | None] = Queue()
     decode_s = 0.0
