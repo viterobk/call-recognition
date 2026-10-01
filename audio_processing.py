@@ -3,7 +3,6 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
-from random import Random
 from threading import Lock, Thread
 from time import perf_counter, sleep
 from typing import Iterator
@@ -31,6 +30,7 @@ class FileJobResult:
     audio_s: float
     decode_s: float
     replicas: int
+    transcript: str
 
 
 def load_audio(audio_path: Path) -> np.ndarray:
@@ -128,7 +128,6 @@ def process_audio_file(
     audio = load_audio(audio_path)
     audio_s = len(audio) / SAMPLE_RATE
     batches = audio_batches(audio)
-    Random(worker_id).shuffle(batches)
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     lines: list[str] = []
     decode_s = 0.0
@@ -146,7 +145,7 @@ def process_audio_file(
                 decode_s += rec_s
                 if not text:
                     continue
-                line = f"[w{worker_id} | {start_s:.1f}s | {duration_s:.1f}s | {rec_s:.2f}s] {text}"
+                line = f"[{start_s:.1f}s | {duration_s:.1f}s | {rec_s:.2f}s] {text}"
                 with PRINT_LOCK:
                     print(line, flush=True)
                 lines.append(line)
@@ -173,4 +172,5 @@ def process_audio_file(
         audio_s=audio_s,
         decode_s=decode_s,
         replicas=len(batches),
+        transcript="\n".join(lines),
     )
