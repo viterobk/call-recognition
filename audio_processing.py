@@ -207,7 +207,8 @@ def process_audio_file(
             pending_s = 0.0
             pending_end_s = 0.0
             if text.strip():
-                log.write(">>> старт формирования резюме <<<", audio_end_s)
+                if not force:
+                    log.write(">>> запрос резюме <<<", audio_end_s)
                 summaries.put((audio_end_s, "резюме", summary.submit(text)))
 
         try:
@@ -228,7 +229,6 @@ def process_audio_file(
                 submit_window()
             submit_window(force=True)
             if full_text:
-                log.write(">>> старт формирования резюме <<<", call_end_s)
                 summaries.put((call_end_s, "резюме звонка", summary.submit("\n".join(full_text))))
         except Exception as error:
             logged_error.append(error)
