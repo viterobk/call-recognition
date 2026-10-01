@@ -129,13 +129,29 @@ class ResultLog:
         self._lock = Lock()
 
     def write(self, text: str, audio_end_s: float) -> None:
+        self._append(f"[{self._stamp(audio_end_s)}] {text}")
+
+    def write_summary(self, label: str, text: str, audio_end_s: float) -> None:
+        block = "\n".join(
+            [
+                "----------------------------------------",
+                f"[{self._stamp(audio_end_s)}] {label}",
+                text.strip(),
+                "----------------------------------------",
+            ]
+        )
+        self._append(block)
+
+    def _stamp(self, audio_end_s: float) -> str:
         lag_s = perf_counter() - self._started - audio_end_s
-        line = f"[{audio_end_s:.1f}s | +{lag_s:.2f}s] {text}"
+        return f"{audio_end_s:.1f}s | +{lag_s:.2f}s"
+
+    def _append(self, block: str) -> None:
         with self._lock:
-            self._lines.append(line)
+            self._lines.append(block)
             self._path.write_text("\n".join(self._lines) + "\n", encoding="utf-8")
         with PRINT_LOCK:
-            print(f"{self._path.stem} {line}", flush=True)
+            print(f"{self._path.stem} {block}", flush=True)
 
 
 def process_audio_file(
@@ -152,7 +168,7 @@ def process_audio_file(
     stream_started = perf_counter()
     log = ResultLog(result_path, stream_started)
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
-    summaries: Queue[tuple[float, Future[tuple[str, float]]] | None] = Queue()
+    summaries: Queue[tuple[float, str, Future[tuple[str, float]]] | None] = Queue()
     decode_s = 0.0
     summary_s = 0.0
     summary_count = 0
@@ -165,19 +181,21 @@ def process_audio_file(
                 item = summaries.get()
                 if item is None:
                     return
-                audio_end_s, future = item
+                audio_end_s, label, future = item
                 text, elapsed_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
-                log.write(f"резюме {text}", audio_end_s)
+                log.write_summary(label, text, audio_end_s)
         except Exception as error:
             logged_error.append(error)
 
     def log_when_ready() -> None:
         nonlocal decode_s
         pending_text: list[str] = []
+        full_text: list[str] = []
         pending_s = 0.0
         pending_end_s = 0.0
+        call_end_s = 0.0
 
         def submit_window(force: bool = False) -> None:
             nonlocal pending_s, pending_end_s
@@ -189,7 +207,8 @@ def process_audio_file(
             pending_s = 0.0
             pending_end_s = 0.0
             if text.strip():
-                summaries.put((audio_end_s, summary.submit(text)))
+                log.write(">>> старт формирования резюме <<<", audio_end_s)
+                summaries.put((audio_end_s, "резюме", summary.submit(text)))
 
         try:
             while True:
@@ -201,11 +220,16 @@ def process_audio_file(
                 decode_s += rec_s
                 pending_s += duration_s
                 pending_end_s = start_s + duration_s
+                call_end_s = pending_end_s
                 if text:
                     log.write(text, pending_end_s)
                     pending_text.append(text)
+                    full_text.append(text)
                 submit_window()
             submit_window(force=True)
+            if full_text:
+                log.write(">>> старт формирования резюме <<<", call_end_s)
+                summaries.put((call_end_s, "резюме звонка", summary.submit("\n".join(full_text))))
         except Exception as error:
             logged_error.append(error)
         finally:
