@@ -193,19 +193,21 @@ def process_audio_file(
         nonlocal decode_s
         pending_text: list[str] = []
         full_text: list[str] = []
-        pending_s = 0.0
         pending_end_s = 0.0
         call_end_s = 0.0
+        next_summary_at = SUMMARY_EVERY_S
 
         def submit_window(force: bool = False) -> None:
-            nonlocal pending_s, pending_end_s
-            if not force and pending_s < SUMMARY_EVERY_S:
+            nonlocal pending_end_s, next_summary_at
+            if not force and pending_end_s < next_summary_at:
                 return
             text = "\n".join(pending_text)
             audio_end_s = pending_end_s
             pending_text.clear()
-            pending_s = 0.0
             pending_end_s = 0.0
+            if not force:
+                while next_summary_at <= audio_end_s:
+                    next_summary_at += SUMMARY_EVERY_S
             if text.strip():
                 if not force:
                     log.write(">>> запрос резюме <<<", audio_end_s)
@@ -219,7 +221,6 @@ def process_audio_file(
                 start_s, duration_s, future = item
                 text, rec_s = future.result()
                 decode_s += rec_s
-                pending_s += duration_s
                 pending_end_s = start_s + duration_s
                 call_end_s = pending_end_s
                 if text:
