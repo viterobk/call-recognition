@@ -1,7 +1,9 @@
 from collections import deque
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from queue import Queue
+from threading import Lock, Thread
 from time import perf_counter, sleep
 from typing import Iterator
 
@@ -124,25 +126,43 @@ def process_audio_file(
     audio = load_audio(audio_path)
     audio_s = len(audio) / SAMPLE_RATE
     batches = audio_batches(audio)
-    pending = []
-    for batch, start_s in batches:
-        duration_s = len(batch) / SAMPLE_RATE
-        sleep(duration_s)
-        pending.append((batch, start_s, duration_s, service.submit(batch)))
-
+    recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
     lines: list[str] = []
     decode_s = 0.0
-    for _audio, start_s, duration_s, future in pending:
-        text, rec_s = future.result()
-        decode_s += rec_s
-        if not text:
-            continue
-        line = f"[w{worker_id} | {start_s:.1f}s | {duration_s:.1f}s | {rec_s:.2f}s] {text}"
-        with PRINT_LOCK:
-            print(line, flush=True)
-        lines.append(line)
+    logged_error: list[BaseException] = []
 
-    result_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    def log_when_ready() -> None:
+        nonlocal decode_s
+        try:
+            while True:
+                item = recognized.get()
+                if item is None:
+                    return
+                start_s, duration_s, future = item
+                text, rec_s = future.result()
+                decode_s += rec_s
+                if not text:
+                    continue
+                line = f"[w{worker_id} | {start_s:.1f}s | {duration_s:.1f}s | {rec_s:.2f}s] {text}"
+                with PRINT_LOCK:
+                    print(line, flush=True)
+                lines.append(line)
+                result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as error:
+            logged_error.append(error)
+
+    logger = Thread(target=log_when_ready, name=f"log-{worker_id}")
+    logger.start()
+    try:
+        for batch, start_s in batches:
+            duration_s = len(batch) / SAMPLE_RATE
+            sleep(duration_s)
+            recognized.put((start_s, duration_s, service.submit(batch)))
+    finally:
+        recognized.put(None)
+        logger.join()
+    if logged_error:
+        raise logged_error[0]
     return FileJobResult(
         worker_id=worker_id,
         wall_s=perf_counter() - started,
