@@ -18,6 +18,7 @@ MIN_REPLICA_MS = 2000
 PAD_MS = 150
 SPEECH_RMS = 0.015
 SPLIT_ON_PAUSES = True
+REALTIME_DELAY = False
 
 PRINT_LOCK = Lock()
 
@@ -166,7 +167,8 @@ def process_audio_file(
     try:
         for batch, start_s in batches:
             duration_s = len(batch) / SAMPLE_RATE
-            sleep(duration_s)
+            if REALTIME_DELAY:
+                sleep(duration_s)
             recognized.put((start_s, duration_s, service.submit(batch)))
     finally:
         recognized.put(None)
