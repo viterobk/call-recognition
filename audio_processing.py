@@ -129,8 +129,8 @@ class ResultLog:
         self._lock = Lock()
 
     def write(self, text: str, audio_end_s: float) -> None:
-        elapsed_s = perf_counter() - self._started
-        line = f"[{audio_end_s:.1f}s | +{elapsed_s:.2f}s] {text}"
+        lag_s = perf_counter() - self._started - audio_end_s
+        line = f"[{audio_end_s:.1f}s | +{lag_s:.2f}s] {text}"
         with self._lock:
             self._lines.append(line)
             self._path.write_text("\n".join(self._lines) + "\n", encoding="utf-8")
