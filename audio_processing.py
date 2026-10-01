@@ -98,10 +98,12 @@ class ResultLog:
     def write(self, text: str, audio_end_s: float) -> None:
         self._append(f"[{self._stamp(audio_end_s)}] {text}")
 
-    def write_summary(self, text: str, audio_end_s: float) -> None:
+    def write_summary(self, text: str, audio_end_s: float, generation_s: float) -> None:
         clock = datetime.now().strftime("%H:%M:%S")
         body = "\n".join(f"    {line}" for line in text.strip().split("\n"))
-        header = f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ =========="
+        header = (
+            f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ ========== генерация {generation_s:.2f}s"
+        )
         self._append(f"{header}\n{body}", clock_each_line=False)
 
     def _stamp(self, audio_end_s: float) -> str:
@@ -153,7 +155,7 @@ def process_audio_file(
                 text, elapsed_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
-                log.write_summary(text, audio_end_s)
+                log.write_summary(text, audio_end_s, elapsed_s)
         except Exception as error:
             logged_error.append(error)
 
