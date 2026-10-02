@@ -11,6 +11,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 SAMPLE_DIR = PROJECT_DIR / "sample_sounds"
 RESULTS_DIR = PROJECT_DIR / "results"
 GANTT_FILE = RESULTS_DIR / "gantt.csv"
+WAIT_FILE = RESULTS_DIR / "wait.csv"
 
 
 def clear_results(path: Path) -> None:
@@ -27,6 +28,15 @@ def write_gantt(spans: list[SummarySpan]) -> None:
             f'{span.order},"{span.file}",{span.label},{span.start_s:.2f},{span.duration_s:.2f},{span.end_s:.2f}'
         )
     GANTT_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_wait(results: list[FileJobResult]) -> None:
+    lines = ["file,label,call_s,wait_s"]
+    points = [(item.name, wait) for item in results for wait in item.waits]
+    points.sort(key=lambda point: (point[0], point[1].call_s))
+    for name, wait in points:
+        lines.append(f'"{name}",{wait.label},{wait.call_s:.2f},{wait.wait_s:.2f}')
+    WAIT_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def report_load(results: list[FileJobResult], wall_s: float) -> None:
@@ -77,6 +87,7 @@ def main() -> None:
             ]
             results = [future.result() for future in futures]
         write_gantt(summary.spans())
+        write_wait(results)
         report_load(results, perf_counter() - started)
     finally:
         summary.close()

@@ -16,7 +16,7 @@ MODEL_NAME = "gemma4:e2b"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 RECENT_SUMMARIES = 10
-SUMMARY_WORKERS = 4
+SUMMARY_WORKERS = 5
 NUM_CTX = 8192
 OLLAMA_DROPIN = Path("/etc/systemd/system/ollama.service.d/parallel.conf")
 

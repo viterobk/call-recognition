@@ -23,6 +23,13 @@ PRINT_LOCK = Lock()
 
 
 @dataclass(frozen=True)
+class SummaryWait:
+    label: str
+    call_s: float
+    wait_s: float
+
+
+@dataclass(frozen=True)
 class FileJobResult:
     name: str
     wall_s: float
@@ -31,6 +38,7 @@ class FileJobResult:
     summary_s: float
     replicas: int
     summaries: int
+    waits: tuple[SummaryWait, ...]
 
 
 def load_audio(audio_path: Path) -> np.ndarray:
@@ -139,10 +147,11 @@ def process_audio_file(
     log = ResultLog(result_path, stream_started)
     log.write_note(">>> старт обработки <<<")
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
-    summaries: Queue[tuple[float, str, Future[tuple[str, float, float]]] | None] = Queue()
+    summaries: Queue[tuple[float, str, float, Future[tuple[str, float, float]]] | None] = Queue()
     decode_s = 0.0
     summary_s = 0.0
     summary_count = 0
+    waits: list[SummaryWait] = []
     logged_error: list[BaseException] = []
 
     def log_summaries() -> None:
@@ -152,10 +161,11 @@ def process_audio_file(
                 item = summaries.get()
                 if item is None:
                     return
-                audio_end_s, _, future = item
+                audio_end_s, label, requested_at, future = item
                 text, elapsed_s, average_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
+                waits.append(SummaryWait(label, audio_end_s, perf_counter() - requested_at))
                 log.write_summary(text, audio_end_s, elapsed_s, average_s)
         except Exception as error:
             logged_error.append(error)
@@ -167,39 +177,38 @@ def process_audio_file(
         schedule_lock = Lock()
         call_done = Event()
         call_end_s = 0.0
-        last_summary: Future[tuple[str, float, float]] | None = None
 
         def current_transcript() -> str:
             with transcript_lock:
                 return "\n".join(full_text)
 
         def schedule_summaries() -> None:
-            nonlocal last_summary
             try:
-                if call_done.wait(SUMMARY_EVERY_S):
-                    return
-                while not call_done.is_set():
-                    with transcript_lock:
-                        has_text = bool(full_text)
-                        audio_end_s = call_end_s
+                call_done.wait(SUMMARY_EVERY_S)
+                requested_after_end = False
+                while not requested_after_end:
+                    while True:
+                        with transcript_lock:
+                            has_text = bool(full_text)
+                            audio_end_s = call_end_s
+                        if has_text or call_done.is_set():
+                            break
+                        call_done.wait(0.05)
                     if not has_text:
-                        if call_done.wait(0.05):
-                            return
-                        continue
+                        return
                     with schedule_lock:
                         if call_done.is_set():
-                            return
+                            requested_after_end = True
+                        label = f"{audio_end_s:.0f}s"
                         log.write_note(">>> запрос резюме <<<")
-                        last_summary = summary.submit(
+                        requested_at = perf_counter()
+                        future = summary.submit(
                             current_transcript,
                             file=audio_path.stem,
-                            label=f"{audio_end_s:.0f}s",
+                            label=label,
                         )
-                        summaries.put((audio_end_s, "резюме", last_summary))
-                        future = last_summary
+                        summaries.put((audio_end_s, label, requested_at, future))
                     future.result()
-                    if call_done.wait(SUMMARY_EVERY_S):
-                        return
             except Exception as error:
                 logged_error.append(error)
                 call_done.set()
@@ -224,16 +233,6 @@ def process_audio_file(
             with schedule_lock:
                 call_done.set()
             scheduler.join()
-            if full_text:
-                with transcript_lock:
-                    call_audio_end_s = call_end_s
-                summaries.put(
-                    (
-                        call_audio_end_s,
-                        "резюме звонка",
-                        summary.submit(current_transcript, file=audio_path.stem, label="звонок"),
-                    )
-                )
         except Exception as error:
             logged_error.append(error)
         finally:
@@ -267,4 +266,5 @@ def process_audio_file(
         summary_s=summary_s,
         replicas=len(batches),
         summaries=summary_count,
+        waits=tuple(waits),
     )
