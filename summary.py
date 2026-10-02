@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import Future
+from dataclasses import dataclass
 from queue import Queue
 from threading import Thread
 from time import perf_counter
@@ -42,25 +43,48 @@ def summarize_call(transcript: str, model_name: str = MODEL_NAME) -> str:
     return str(body.get("response", "")).strip()
 
 
+@dataclass(frozen=True)
+class SummarySpan:
+    order: int
+    file: str
+    label: str
+    start_s: float
+    duration_s: float
+
+    @property
+    def end_s(self) -> float:
+        return self.start_s + self.duration_s
+
+
 class SummaryService:
     def __init__(self, model_name: str = MODEL_NAME) -> None:
         self._model_name = model_name
-        self._queue: Queue[tuple[str, Future[tuple[str, float]]] | None] = Queue()
+        self._queue: Queue[tuple[str, str, str, Future[tuple[str, float]]] | None] = Queue()
         self._worker = Thread(target=self._serve, name="summary")
         self._started = False
+        self._origin = 0.0
+        self._order = 0
+        self._spans: list[SummarySpan] = []
 
     def start(self) -> None:
         if self._started:
             return
+        self._origin = perf_counter()
         self._worker.start()
         self._started = True
 
-    def submit(self, transcript: str) -> Future[tuple[str, float]]:
+    def set_origin(self, origin: float) -> None:
+        self._origin = origin
+
+    def submit(self, transcript: str, *, file: str, label: str) -> Future[tuple[str, float]]:
         if not self._started:
             raise RuntimeError("Summary service is not started")
         future: Future[tuple[str, float]] = Future()
-        self._queue.put((transcript, future))
+        self._queue.put((transcript, file, label, future))
         return future
+
+    def spans(self) -> list[SummarySpan]:
+        return list(self._spans)
 
     def close(self) -> None:
         if not self._started:
@@ -74,10 +98,21 @@ class SummaryService:
             item = self._queue.get()
             if item is None:
                 return
-            transcript, future = item
+            transcript, file, label, future = item
             started = perf_counter()
             try:
                 text = summarize_call(transcript, self._model_name)
-                future.set_result((text, perf_counter() - started))
+                duration_s = perf_counter() - started
+                self._order += 1
+                self._spans.append(
+                    SummarySpan(
+                        order=self._order,
+                        file=file,
+                        label=label,
+                        start_s=started - self._origin,
+                        duration_s=duration_s,
+                    )
+                )
+                future.set_result((text, duration_s))
             except Exception as error:
                 future.set_exception(error)

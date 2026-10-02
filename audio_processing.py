@@ -181,7 +181,13 @@ def process_audio_file(
             if text.strip():
                 if not force:
                     log.write_note(">>> запрос резюме <<<")
-                summaries.put((audio_end_s, "резюме", summary.submit(text)))
+                summaries.put(
+                    (
+                        audio_end_s,
+                        "резюме",
+                        summary.submit(text, file=audio_path.stem, label=f"{audio_end_s:.0f}s"),
+                    )
+                )
 
         try:
             while True:
@@ -200,7 +206,13 @@ def process_audio_file(
                 submit_window()
             submit_window(force=True)
             if full_text:
-                summaries.put((call_end_s, "резюме звонка", summary.submit("\n".join(full_text))))
+                summaries.put(
+                    (
+                        call_end_s,
+                        "резюме звонка",
+                        summary.submit("\n".join(full_text), file=audio_path.stem, label="звонок"),
+                    )
+                )
         except Exception as error:
             logged_error.append(error)
         finally:

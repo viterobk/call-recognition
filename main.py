@@ -4,12 +4,13 @@ from sys import stdout
 from time import perf_counter
 
 from audio_processing import FileJobResult, process_audio_file
-from summary import SummaryService
+from summary import SummaryService, SummarySpan
 from transcription import TranscriptionService
 
 PROJECT_DIR = Path(__file__).resolve().parent
 SAMPLE_DIR = PROJECT_DIR / "sample_sounds"
 RESULTS_DIR = PROJECT_DIR / "results"
+GANTT_FILE = RESULTS_DIR / "gantt.csv"
 
 
 def clear_results(path: Path) -> None:
@@ -17,6 +18,15 @@ def clear_results(path: Path) -> None:
     for item in path.iterdir():
         if item.is_file():
             item.unlink()
+
+
+def write_gantt(spans: list[SummarySpan]) -> None:
+    lines = ["order,file,label,start_s,duration_s,end_s"]
+    for span in spans:
+        lines.append(
+            f'{span.order},"{span.file}",{span.label},{span.start_s:.2f},{span.duration_s:.2f},{span.end_s:.2f}'
+        )
+    GANTT_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def report_load(results: list[FileJobResult], wall_s: float) -> None:
@@ -52,6 +62,7 @@ def main() -> None:
         transcription.start()
         summary.start()
         started = perf_counter()
+        summary.set_origin(started)
         with ThreadPoolExecutor(max_workers=len(files)) as pool:
             futures = [
                 pool.submit(
@@ -65,6 +76,7 @@ def main() -> None:
                 for worker_id, audio_path in enumerate(files)
             ]
             results = [future.result() for future in futures]
+        write_gantt(summary.spans())
         report_load(results, perf_counter() - started)
     finally:
         summary.close()
