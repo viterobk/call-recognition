@@ -3,6 +3,7 @@
 
 import csv
 import html
+import math
 import sys
 import webbrowser
 from pathlib import Path
@@ -46,15 +47,16 @@ def read_rows(path: Path) -> list[dict[str, str]]:
 
 def render(rows: list[dict[str, str]]) -> str:
     label_width = 280
-    chart_width = 920
     row_height = 28
     margin_top = 36
     margin_bottom = 28
+    px_per_second = 10.0
+    axis_pad = 20
     files = unique_files(rows)
     height = margin_top + row_height * len(files) + margin_bottom
-    width = label_width + chart_width + 24
     end = max(float(row["end_s"]) for row in rows)
-    end = end if end > 0 else 1.0
+    axis_end = grid_end(end)
+    chart_width = axis_end * px_per_second
     colors = {name: PALETTE[index % len(PALETTE)] for index, name in enumerate(files)}
     row_of = {name: index for index, name in enumerate(files)}
 
@@ -64,15 +66,28 @@ def render(rows: list[dict[str, str]]) -> str:
         "<title>Генерация резюме</title>",
         "<style>body{margin:24px;font:14px sans-serif;background:#fff;color:#222}",
         "p{color:#555}",
+        ".chart{display:flex;align-items:flex-start}",
+        ".labels{flex:0 0 " + str(label_width) + "px;padding-top:" + str(margin_top) + "px}",
+        ".labels div{height:" + str(row_height) + "px;line-height:" + str(row_height) + "px;",
+        "padding-right:8px;text-align:right;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+        ".scroll{overflow-x:auto;flex:1;min-width:0}",
         "#tip{position:fixed;display:none;padding:6px 8px;background:#222;color:#fff;",
         "font-size:13px;border-radius:4px;pointer-events:none;white-space:pre-line;z-index:2}</style></head><body>",
         "<div id='tip'></div>",
         "<h1>Генерация резюме</h1>",
         "<p>Полоса — чистое время генерации. Просвет перед ней — ожидание в очереди.</p>",
-        "<svg xmlns='http://www.w3.org/2000/svg' width='{0}' height='{1}'>".format(width, height),
+        "<div class='chart'><div class='labels'>",
     ]
-    for tick in ticks(end):
-        x = label_width + chart_width * tick / end
+    for name in files:
+        parts.append("<div title='{0}'>{0}</div>".format(html.escape(name)))
+    parts.append("</div><div class='scroll'>")
+    parts.append(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='{0:.0f}' height='{1}'>".format(
+            chart_width + axis_pad * 2, height
+        )
+    )
+    for tick in ticks(axis_end):
+        x = axis_pad + chart_width * tick / axis_end
         parts.append(
             "<line x1='{0:.1f}' y1='{1}' x2='{0:.1f}' y2='{2}' stroke='#eee'/>".format(
                 x, margin_top - 8, height - margin_bottom
@@ -83,26 +98,19 @@ def render(rows: list[dict[str, str]]) -> str:
                 x, height - 8, tick
             )
         )
-    for name in files:
-        y = margin_top + row_of[name] * row_height
-        parts.append(
-            "<text x='{0}' y='{1}' text-anchor='end' font-size='12'>{2}</text>".format(
-                label_width - 8, y + 18, html.escape(name)
-            )
-        )
     for row in rows:
         y = margin_top + row_of[row["file"]] * row_height
         start = float(row["start_s"])
         duration = float(row["duration_s"])
-        x = label_width + chart_width * start / end
-        bar = max(2.0, chart_width * duration / end)
+        x = axis_pad + chart_width * start / axis_end
+        bar = max(2.0, chart_width * duration / axis_end)
         tip = "{0} {1}\nгенерация {2:.2f}s".format(row["file"], row["label"], duration)
         parts.append(
             "<rect x='{0:.1f}' y='{1}' width='{2:.1f}' height='{3}' fill='{4}' rx='3' data-tip='{5}'></rect>".format(
                 x, y + 4, bar, row_height - 8, colors[row["file"]], html.escape(tip, quote=True)
             )
         )
-    parts.append("</svg>")
+    parts.append("</svg></div></div>")
     parts.append(
         "<script>var tip=document.getElementById('tip');"
         "document.querySelectorAll('rect[data-tip]').forEach(function(bar){"
@@ -123,18 +131,20 @@ def unique_files(rows: list[dict[str, str]]) -> list[str]:
     return seen
 
 
+def grid_end(end: float) -> float:
+    step = 5.0
+    if end <= 0:
+        return step
+    return step * math.ceil(end / step)
+
+
 def ticks(end: float) -> list[float]:
-    step = 1.0
-    for candidate in (1, 2, 5, 10, 15, 30, 60, 120):
-        if end / candidate <= 12:
-            step = float(candidate)
-            break
+    step = 5.0
     values = [0.0]
     mark = step
-    while mark < end:
+    while mark <= end + 1e-9:
         values.append(mark)
         mark += step
-    values.append(end)
     return values
 
 
