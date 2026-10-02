@@ -163,9 +163,14 @@ def process_audio_file(
         nonlocal decode_s
         pending_text: list[str] = []
         full_text: list[str] = []
+        transcript_lock = Lock()
         pending_end_s = 0.0
         call_end_s = 0.0
         next_summary_at = SUMMARY_EVERY_S
+
+        def current_transcript() -> str:
+            with transcript_lock:
+                return "\n".join(full_text)
 
         def submit_window(force: bool = False) -> None:
             nonlocal pending_end_s, next_summary_at
@@ -185,7 +190,7 @@ def process_audio_file(
                     (
                         audio_end_s,
                         "резюме",
-                        summary.submit(text, file=audio_path.stem, label=f"{audio_end_s:.0f}s"),
+                        summary.submit(current_transcript, file=audio_path.stem, label=f"{audio_end_s:.0f}s"),
                     )
                 )
 
@@ -202,7 +207,8 @@ def process_audio_file(
                 if text:
                     log.write(text, pending_end_s)
                     pending_text.append(text)
-                    full_text.append(text)
+                    with transcript_lock:
+                        full_text.append(text)
                 submit_window()
             submit_window(force=True)
             if full_text:
@@ -210,7 +216,7 @@ def process_audio_file(
                     (
                         call_end_s,
                         "резюме звонка",
-                        summary.submit("\n".join(full_text), file=audio_path.stem, label="звонок"),
+                        summary.submit(current_transcript, file=audio_path.stem, label="звонок"),
                     )
                 )
         except Exception as error:

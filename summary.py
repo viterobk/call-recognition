@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from queue import Queue
@@ -59,7 +60,7 @@ class SummarySpan:
 class SummaryService:
     def __init__(self, model_name: str = MODEL_NAME) -> None:
         self._model_name = model_name
-        self._queue: Queue[tuple[str, str, str, Future[tuple[str, float]]] | None] = Queue()
+        self._queue: Queue[tuple[Callable[[], str], str, str, Future[tuple[str, float]]] | None] = Queue()
         self._worker = Thread(target=self._serve, name="summary")
         self._started = False
         self._origin = 0.0
@@ -76,11 +77,11 @@ class SummaryService:
     def set_origin(self, origin: float) -> None:
         self._origin = origin
 
-    def submit(self, transcript: str, *, file: str, label: str) -> Future[tuple[str, float]]:
+    def submit(self, get_transcript: Callable[[], str], *, file: str, label: str) -> Future[tuple[str, float]]:
         if not self._started:
             raise RuntimeError("Summary service is not started")
         future: Future[tuple[str, float]] = Future()
-        self._queue.put((transcript, file, label, future))
+        self._queue.put((get_transcript, file, label, future))
         return future
 
     def spans(self) -> list[SummarySpan]:
@@ -98,9 +99,10 @@ class SummaryService:
             item = self._queue.get()
             if item is None:
                 return
-            transcript, file, label, future = item
-            started = perf_counter()
+            get_transcript, file, label, future = item
             try:
+                transcript = get_transcript()
+                started = perf_counter()
                 text = summarize_call(transcript, self._model_name)
                 duration_s = perf_counter() - started
                 self._order += 1
