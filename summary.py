@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 MODEL_NAME = "gemma4:e2b"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+RECENT_SUMMARIES = 10
 
 PROMPT = """Сделай короткое резюме телефонного звонка на русском языке обычным текстом.
 Укажи суть проблемы и предложенные решения.
@@ -60,7 +61,7 @@ class SummarySpan:
 class SummaryService:
     def __init__(self, model_name: str = MODEL_NAME) -> None:
         self._model_name = model_name
-        self._queue: Queue[tuple[Callable[[], str], str, str, Future[tuple[str, float]]] | None] = Queue()
+        self._queue: Queue[tuple[Callable[[], str], str, str, Future[tuple[str, float, float]]] | None] = Queue()
         self._worker = Thread(target=self._serve, name="summary")
         self._started = False
         self._origin = 0.0
@@ -77,10 +78,10 @@ class SummaryService:
     def set_origin(self, origin: float) -> None:
         self._origin = origin
 
-    def submit(self, get_transcript: Callable[[], str], *, file: str, label: str) -> Future[tuple[str, float]]:
+    def submit(self, get_transcript: Callable[[], str], *, file: str, label: str) -> Future[tuple[str, float, float]]:
         if not self._started:
             raise RuntimeError("Summary service is not started")
-        future: Future[tuple[str, float]] = Future()
+        future: Future[tuple[str, float, float]] = Future()
         self._queue.put((get_transcript, file, label, future))
         return future
 
@@ -115,6 +116,8 @@ class SummaryService:
                         duration_s=duration_s,
                     )
                 )
-                future.set_result((text, duration_s))
+                recent = self._spans[-RECENT_SUMMARIES:]
+                average_s = sum(span.duration_s for span in recent) / len(recent)
+                future.set_result((text, duration_s, average_s))
             except Exception as error:
                 future.set_exception(error)

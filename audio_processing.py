@@ -98,11 +98,12 @@ class ResultLog:
     def write(self, text: str, audio_end_s: float) -> None:
         self._append(f"[{self._stamp(audio_end_s)}] {text}")
 
-    def write_summary(self, text: str, audio_end_s: float, generation_s: float) -> None:
+    def write_summary(self, text: str, audio_end_s: float, generation_s: float, average_s: float) -> None:
         clock = datetime.now().strftime("%H:%M:%S")
         body = "\n".join(f"    {line}" for line in text.strip().split("\n"))
         header = (
-            f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ ========== генерация {generation_s:.2f}s"
+            f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ ========== "
+            f"генерация {generation_s:.2f}s среднее 10 {average_s:.2f}s"
         )
         self._append(f"{header}\n{body}", clock_each_line=False)
 
@@ -138,7 +139,7 @@ def process_audio_file(
     log = ResultLog(result_path, stream_started)
     log.write_note(">>> старт обработки <<<")
     recognized: Queue[tuple[float, float, Future[tuple[str, float]]] | None] = Queue()
-    summaries: Queue[tuple[float, str, Future[tuple[str, float]]] | None] = Queue()
+    summaries: Queue[tuple[float, str, Future[tuple[str, float, float]]] | None] = Queue()
     decode_s = 0.0
     summary_s = 0.0
     summary_count = 0
@@ -152,10 +153,10 @@ def process_audio_file(
                 if item is None:
                     return
                 audio_end_s, _, future = item
-                text, elapsed_s = future.result()
+                text, elapsed_s, average_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
-                log.write_summary(text, audio_end_s, elapsed_s)
+                log.write_summary(text, audio_end_s, elapsed_s, average_s)
         except Exception as error:
             logged_error.append(error)
 
