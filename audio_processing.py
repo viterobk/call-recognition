@@ -168,13 +168,14 @@ def process_audio_file(
         pending_end_s = 0.0
         call_end_s = 0.0
         next_summary_at = SUMMARY_EVERY_S
+        last_summary: Future[tuple[str, float, float]] | None = None
 
         def current_transcript() -> str:
             with transcript_lock:
                 return "\n".join(full_text)
 
         def submit_window(force: bool = False) -> None:
-            nonlocal pending_end_s, next_summary_at
+            nonlocal pending_end_s, next_summary_at, last_summary
             if not force and pending_end_s < next_summary_at:
                 return
             text = "\n".join(pending_text)
@@ -187,13 +188,10 @@ def process_audio_file(
             if text.strip():
                 if not force:
                     log.write_note(">>> запрос резюме <<<")
-                summaries.put(
-                    (
-                        audio_end_s,
-                        "резюме",
-                        summary.submit(current_transcript, file=audio_path.stem, label=f"{audio_end_s:.0f}s"),
-                    )
+                last_summary = summary.submit(
+                    current_transcript, file=audio_path.stem, label=f"{audio_end_s:.0f}s"
                 )
+                summaries.put((audio_end_s, "резюме", last_summary))
 
         try:
             while True:
@@ -212,6 +210,8 @@ def process_audio_file(
                         full_text.append(text)
                 submit_window()
             submit_window(force=True)
+            if last_summary is not None:
+                last_summary.result()
             if full_text:
                 summaries.put(
                     (

@@ -50,18 +50,23 @@ def render(rows: list[dict[str, str]]) -> str:
     row_height = 28
     margin_top = 36
     margin_bottom = 28
-    height = margin_top + row_height * len(rows) + margin_bottom
+    files = unique_files(rows)
+    height = margin_top + row_height * len(files) + margin_bottom
     width = label_width + chart_width + 24
     end = max(float(row["end_s"]) for row in rows)
     end = end if end > 0 else 1.0
-    colors = {name: PALETTE[index % len(PALETTE)] for index, name in enumerate(unique_files(rows))}
+    colors = {name: PALETTE[index % len(PALETTE)] for index, name in enumerate(files)}
+    row_of = {name: index for index, name in enumerate(files)}
 
     parts = [
         "<!DOCTYPE html>",
         "<html lang='ru'><head><meta charset='utf-8'>",
         "<title>Генерация резюме</title>",
         "<style>body{margin:24px;font:14px sans-serif;background:#fff;color:#222}",
-        "p{color:#555}</style></head><body>",
+        "p{color:#555}",
+        "#tip{position:fixed;display:none;padding:6px 8px;background:#222;color:#fff;",
+        "font-size:13px;border-radius:4px;pointer-events:none;white-space:pre-line;z-index:2}</style></head><body>",
+        "<div id='tip'></div>",
         "<h1>Генерация резюме</h1>",
         "<p>Полоса — чистое время генерации. Просвет перед ней — ожидание в очереди.</p>",
         "<svg xmlns='http://www.w3.org/2000/svg' width='{0}' height='{1}'>".format(width, height),
@@ -78,27 +83,35 @@ def render(rows: list[dict[str, str]]) -> str:
                 x, height - 8, tick
             )
         )
-    for index, row in enumerate(rows):
-        y = margin_top + index * row_height
-        start = float(row["start_s"])
-        duration = float(row["duration_s"])
-        x = label_width + chart_width * start / end
-        bar = max(2.0, chart_width * duration / end)
-        name = "{0}. {1} {2}".format(row["order"], row["file"], row["label"])
-        tip = "{0} {1}: старт {2:.2f}s, генерация {3:.2f}s, конец {4:.2f}s".format(
-            row["file"], row["label"], start, duration, float(row["end_s"])
-        )
+    for name in files:
+        y = margin_top + row_of[name] * row_height
         parts.append(
             "<text x='{0}' y='{1}' text-anchor='end' font-size='12'>{2}</text>".format(
                 label_width - 8, y + 18, html.escape(name)
             )
         )
+    for row in rows:
+        y = margin_top + row_of[row["file"]] * row_height
+        start = float(row["start_s"])
+        duration = float(row["duration_s"])
+        x = label_width + chart_width * start / end
+        bar = max(2.0, chart_width * duration / end)
+        tip = "{0} {1}\nгенерация {2:.2f}s".format(row["file"], row["label"], duration)
         parts.append(
-            "<rect x='{0:.1f}' y='{1}' width='{2:.1f}' height='{3}' fill='{4}' rx='3'><title>{5}</title></rect>".format(
-                x, y + 4, bar, row_height - 8, colors[row["file"]], html.escape(tip)
+            "<rect x='{0:.1f}' y='{1}' width='{2:.1f}' height='{3}' fill='{4}' rx='3' data-tip='{5}'></rect>".format(
+                x, y + 4, bar, row_height - 8, colors[row["file"]], html.escape(tip, quote=True)
             )
         )
-    parts.append("</svg></body></html>")
+    parts.append("</svg>")
+    parts.append(
+        "<script>var tip=document.getElementById('tip');"
+        "document.querySelectorAll('rect[data-tip]').forEach(function(bar){"
+        "bar.addEventListener('mousemove',function(event){"
+        "tip.textContent=bar.getAttribute('data-tip');tip.style.display='block';"
+        "tip.style.left=(event.clientX+12)+'px';tip.style.top=(event.clientY+12)+'px';});"
+        "bar.addEventListener('mouseleave',function(){tip.style.display='none';});"
+        "});</script></body></html>"
+    )
     return "\n".join(parts)
 
 
