@@ -14,17 +14,10 @@ from urllib.request import Request, urlopen
 
 MODEL_NAME = "gemma4:e2b"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_PS_URL = "http://127.0.0.1:11434/api/ps"
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 RECENT_SUMMARIES = 10
+SUMMARY_WORKERS = 4
 NUM_CTX = 8192
-GIB = 1024 ** 3
-# Веса gemma4:e2b в видеопамяти и запас, чтобы раннер не ушёл в оперативную память.
-MODEL_WEIGHT_BYTES = int(7.2 * GIB)
-SAFETY_BYTES = GIB
-# Контекст 8192 на один слот: кэш плюс накладные расходы раннера.
-KV_SLOT_BYTES = GIB
-MAX_SUMMARY_SLOTS = 32
 OLLAMA_DROPIN = Path("/etc/systemd/system/ollama.service.d/parallel.conf")
 
 PROMPT = """Сделай короткое резюме телефонного звонка на русском языке обычным текстом.
@@ -34,39 +27,6 @@ PROMPT = """Сделай короткое резюме телефонного з
 Транскрипция:
 {transcript}
 """
-
-
-def summary_slot_count(free_bytes: int, resident_bytes: int) -> int:
-    budget = free_bytes + resident_bytes - MODEL_WEIGHT_BYTES - SAFETY_BYTES
-    if budget < KV_SLOT_BYTES:
-        return 1
-    return max(1, min(MAX_SUMMARY_SLOTS, budget // KV_SLOT_BYTES))
-
-
-def _cuda_free_bytes() -> int | None:
-    try:
-        import torch
-    except ImportError:
-        return None
-    if not torch.cuda.is_available():
-        return None
-    free, _total = torch.cuda.mem_get_info()
-    return int(free)
-
-
-def _ollama_model_vram(model_name: str) -> int:
-    try:
-        with urlopen(OLLAMA_PS_URL, timeout=5) as response:
-            body = json.loads(response.read().decode())
-    except (OSError, json.JSONDecodeError, TimeoutError):
-        return 0
-    family = model_name.split(":", 1)[0]
-    total = 0
-    for model in body.get("models") or []:
-        name = str(model.get("name") or model.get("model") or "")
-        if name == model_name or name.startswith(family + ":"):
-            total += int(model.get("size_vram") or 0)
-    return total
 
 
 def _run(argv: list[str], *, input_text: str | None = None, timeout: float = 30) -> subprocess.CompletedProcess[str] | None:
@@ -165,23 +125,12 @@ def _align_ollama(slots: int) -> int:
     return slots
 
 
-def _worker_count(model_name: str) -> int:
-    free = _cuda_free_bytes()
-    if free is None:
-        print("summary: 1 поток, видеокарта не видна", flush=True)
-        return _align_ollama(1)
-    resident = _ollama_model_vram(model_name)
-    slots = summary_slot_count(free, resident)
-    actual = _align_ollama(slots)
-    free_gib = free / GIB
-    print(
-        f"summary: {actual} потоков, свободно {free_gib:.1f} ГБ, "
-        f"веса {MODEL_WEIGHT_BYTES / GIB:.1f} ГБ, слот {KV_SLOT_BYTES / GIB:.1f} ГБ",
-        flush=True,
-    )
-    if actual < slots:
+def _worker_count() -> int:
+    actual = _align_ollama(SUMMARY_WORKERS)
+    print(f"summary: {actual} потоков", flush=True)
+    if actual < SUMMARY_WORKERS:
         print(
-            f"summary: по памяти выходит {slots} потоков, Ollama принимает {actual}",
+            f"summary: задано {SUMMARY_WORKERS} потоков, Ollama принимает {actual}",
             flush=True,
         )
     return actual
@@ -240,7 +189,7 @@ class SummaryService:
         if self._started:
             return
         self._origin = perf_counter()
-        worker_count = _worker_count(self._model_name)
+        worker_count = _worker_count()
         for index in range(worker_count):
             worker = Thread(target=self._serve, name=f"summary-{index}")
             worker.start()
