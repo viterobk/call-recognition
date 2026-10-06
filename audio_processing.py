@@ -106,11 +106,18 @@ class ResultLog:
     def write(self, text: str, audio_end_s: float) -> None:
         self._append(f"[{self._stamp(audio_end_s)}] {text}")
 
-    def write_summary(self, text: str, audio_end_s: float, generation_s: float, average_s: float) -> None:
+    def write_summary(
+        self,
+        text: str,
+        audio_end_s: float,
+        generation_s: float,
+        average_s: float,
+        wait_s: float,
+    ) -> None:
         clock = datetime.now().strftime("%H:%M:%S")
         body = "\n".join(f"    {line}" for line in text.strip().split("\n"))
         header = (
-            f"{clock} [{self._stamp(audio_end_s)}] ========== РЕЗЮМЕ ========== "
+            f"{clock} [{audio_end_s:.1f}s | +{wait_s:.2f}s] ========== РЕЗЮМЕ ========== "
             f"генерация {generation_s:.2f}s среднее 10 {average_s:.2f}s"
         )
         self._append(f"{header}\n{body}", clock_each_line=False)
@@ -165,8 +172,9 @@ def process_audio_file(
                 text, elapsed_s, average_s = future.result()
                 summary_s += elapsed_s
                 summary_count += 1
-                waits.append(SummaryWait(label, audio_end_s, perf_counter() - requested_at))
-                log.write_summary(text, audio_end_s, elapsed_s, average_s)
+                wait_s = perf_counter() - requested_at
+                waits.append(SummaryWait(label, audio_end_s, wait_s))
+                log.write_summary(text, audio_end_s, elapsed_s, average_s, wait_s)
         except Exception as error:
             logged_error.append(error)
 
@@ -178,8 +186,12 @@ def process_audio_file(
         call_done = Event()
         call_end_s = 0.0
 
+        covered = 0
+
         def current_transcript() -> str:
+            nonlocal covered
             with transcript_lock:
+                covered = len(full_text)
                 return "\n".join(full_text)
 
         def schedule_summaries() -> None:
@@ -189,18 +201,21 @@ def process_audio_file(
                 while not requested_after_end:
                     while True:
                         with transcript_lock:
-                            has_text = bool(full_text)
+                            has_new_replica = len(full_text) > covered
                             audio_end_s = call_end_s
-                        if has_text or call_done.is_set():
+                        if has_new_replica or call_done.is_set():
                             break
                         call_done.wait(0.05)
-                    if not has_text:
+                    with transcript_lock:
+                        has_new_replica = len(full_text) > covered
+                        audio_end_s = call_end_s
+                    if not has_new_replica:
                         return
                     with schedule_lock:
                         if call_done.is_set():
                             requested_after_end = True
                         label = f"{audio_end_s:.0f}s"
-                        log.write_note(">>> запрос резюме <<<")
+                        log.write(">>> запрос резюме <<<", audio_end_s)
                         requested_at = perf_counter()
                         future = summary.submit(
                             current_transcript,
