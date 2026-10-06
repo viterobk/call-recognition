@@ -5,6 +5,7 @@ from time import perf_counter
 
 from audio_processing import FileJobResult, process_audio_file
 from summary import SummaryService, SummarySpan
+from tools.charts_page import write_page
 from transcription import TranscriptionService
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -89,6 +90,9 @@ def main() -> None:
         write_gantt(summary.spans())
         write_wait(results)
         report_load(results, perf_counter() - started)
+        page = write_page(RESULTS_DIR)
+        if page is not None:
+            print(page, flush=True)
     finally:
         summary.close()
         transcription.close()

@@ -29,6 +29,14 @@ def main() -> None:
     results = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_RESULTS
     if results.is_file():
         results = results.parent
+    page = write_page(results)
+    if page is None:
+        raise SystemExit("В {0} нет данных gantt.csv и wait.csv".format(results))
+    print(page)
+    webbrowser.open(page.as_uri())
+
+
+def write_page(results: Path) -> Path | None:
     gantt_rows = read_csv(results / "gantt.csv")
     wait_rows = read_csv(results / "wait.csv")
     if gantt_rows:
@@ -36,11 +44,10 @@ def main() -> None:
     if wait_rows:
         wait_rows.sort(key=lambda row: (row["file"], float(row["call_s"])))
     if not gantt_rows and not wait_rows:
-        raise SystemExit("В {0} нет данных gantt.csv и wait.csv".format(results))
+        return None
     page = results / "charts.html"
     page.write_text(render(gantt_rows, wait_rows), encoding="utf-8")
-    print(page)
-    webbrowser.open(page.as_uri())
+    return page
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
