@@ -1,6 +1,6 @@
 # Распознавание звонков
 
-Сервер с драйвером NVIDIA CUDA 13.3. Скрипт ставит ffmpeg, Python-окружение с PyTorch `2.14.1+cu132`, Ollama и модель `gemma4:e2b`. Драйвер NVIDIA скрипт не устанавливает: `nvidia-smi` уже должен видеть видеокарту. Колеса PyTorch под сам CUDA 13.3 нет, а сборка 13.4 требует драйвер новее. `cu132` на драйвере 13.3 работает.
+Сервер с драйвером NVIDIA CUDA 13.3. Скрипт ставит ffmpeg, Python-окружение с PyTorch `2.14.1+cu132`, Ollama и модель `gemma4:e2b-it-qat`. Драйвер NVIDIA скрипт не устанавливает: `nvidia-smi` уже должен видеть видеокарту. Колеса PyTorch под сам CUDA 13.3 нет, а сборка 13.4 требует драйвер новее. `cu132` на драйвере 13.3 работает.
 
 Положите mp3 в `sample_sounds`. Приложение обрабатывает все файлы сразу и пишет результат в `results`.
 
@@ -35,7 +35,7 @@ fi
 
 curl -fsSL https://ollama.com/install.sh | sh
 sudo systemctl enable --now ollama
-ollama pull gemma4:e2b
+ollama pull gemma4:e2b-it-qat
 
 .venv/bin/python main.py
 ```
