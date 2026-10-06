@@ -12,7 +12,7 @@ from time import perf_counter, sleep
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-MODEL_NAME = "gemma4:e2b-it-qat"
+MODEL_NAME = "gemma4:e2b"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 RECENT_SUMMARIES = 10

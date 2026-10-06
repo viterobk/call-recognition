@@ -36,6 +36,6 @@ if command -v systemctl >/dev/null 2>&1; then
   $SUDO systemctl enable --now ollama
 fi
 
-ollama pull gemma4:e2b-it-qat
+ollama pull gemma4:e2b
 
 echo "Готово. Запуск: .venv/bin/python main.py"
