@@ -1,2 +1,2 @@
-# CUDA 12.8 wheels live in requirements.txt. This file installs the same set.
+# CUDA 13.3 driver wheels live in requirements.txt. This file installs the same set.
 -r requirements.txt

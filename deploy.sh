@@ -10,7 +10,7 @@ else
 fi
 
 if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "Нужен драйвер NVIDIA с поддержкой CUDA 12.8. Команда nvidia-smi не найдена." >&2
+  echo "Нужен драйвер NVIDIA с поддержкой CUDA 13.3. Команда nvidia-smi не найдена." >&2
   exit 1
 fi
 
