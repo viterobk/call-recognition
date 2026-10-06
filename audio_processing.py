@@ -14,6 +14,7 @@ from transcription import MAX_SEGMENT_S, SAMPLE_RATE, TranscriptionService
 
 STREAM_CHUNK_MS = 30
 PAUSE_MS = 300
+MIN_FRAGMENT_MS = 3000
 SPEECH_RMS = 0.008
 SPLIT_ON_PAUSES = True
 REALTIME_DELAY = True
@@ -51,6 +52,7 @@ def split_on_silence(
     audio: np.ndarray,
     *,
     pause_ms: int = PAUSE_MS,
+    min_fragment_ms: int = MIN_FRAGMENT_MS,
     speech_rms: float = SPEECH_RMS,
     chunk_ms: int = STREAM_CHUNK_MS,
 ) -> list[tuple[np.ndarray, float]]:
@@ -59,6 +61,7 @@ def split_on_silence(
     chunk_size = int(SAMPLE_RATE * chunk_ms / 1000)
     chunks = [audio[start : start + chunk_size] for start in range(0, len(audio), chunk_size)]
     pause_chunks = max(1, pause_ms // chunk_ms)
+    min_fragment_chunks = max(1, min_fragment_ms // chunk_ms)
     starts = [0]
     silence = 0
     silence_start = 0
@@ -72,7 +75,13 @@ def split_on_silence(
         if silence == 0:
             silence_start = index
         silence += 1
-        if seen_speech and silence == pause_chunks and silence_start > starts[-1]:
+        fragment_chunks = silence_start - starts[-1]
+        if (
+            seen_speech
+            and silence == pause_chunks
+            and silence_start > starts[-1]
+            and fragment_chunks >= min_fragment_chunks
+        ):
             starts.append(silence_start)
     starts.append(len(chunks))
     segments: list[tuple[np.ndarray, float]] = []
